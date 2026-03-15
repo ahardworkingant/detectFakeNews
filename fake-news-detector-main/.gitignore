@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Model files 
+*.bin
+*.pt
+*.onnx
+*.model
+/models/
+
+# Logs
+logs/
+*.log
+
+# Environment variables
+.env
+.env.local
+
+# Project specific
+.streamlit/secrets.toml
+/cache/
+.streamlit/
+*.db
+
+
+.claude/
+.lh/
+*.pdf
+data/*
+# 但保留用户配置目录结构
+!data/user_configs/
+!data/user_configs/.gitkeep
+# 忽略具体配置文件
+data/user_configs/*.json
