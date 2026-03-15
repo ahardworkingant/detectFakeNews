@@ -1,1446 +1,429 @@
 import streamlit as st
-import os
-import re
 from datetime import datetime
-import time
-import base64
-from fact_checker import FactChecker
-import auth
-import db_utils
-from pdf_export import generate_fact_check_pdf
-from model_manager import model_manager
+import streamlit.components.v1 as components
 
-from reportlab.pdfgen import canvas
-from io import BytesIO
-
-
-def generate_test_pdf():
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer)
-    c.drawString(100, 750, "这是一个测试PDF")
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-# 初始化数据库
-db_utils.init_db()
-
-# 页面配置
+# ==========================================
+# 1. 页面级配置
+# ==========================================
 st.set_page_config(
-    page_title="AI虚假新闻检测器",
-    page_icon="🔍",
+    page_title="较真 - Jiaozhen News Observer",
+    page_icon="🕵️‍♂️",
     layout="wide",
-    menu_items={"Get Help": None, "Report a bug": None, "About": None},
+    initial_sidebar_state="collapsed"
 )
 
-
-def check_user_config_status():
-    """检查用户配置状态，判断是否需要显示配置向导"""
-    from user_config import get_user_config_manager
+# ==========================================
+# 2. 全局样式注入 (核心布局与暗黑模式)
+# ==========================================
+# 解析：隐藏原生组件，使用 position: fixed 绘制侧边栏，推移主内容区
+tailwind_and_custom_css = """
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+    /* 彻底隐藏 Streamlit 原生外壳干扰 */
+    [data-testid="collapsedControl"], [data-testid="stSidebar"], header[data-testid="stHeader"], footer { 
+        display: none !important; 
+    }
     
-    config_manager = get_user_config_manager()
-    if not config_manager:
-        return False  # 未登录，不需要检查配置
-    
-    user_config = config_manager.get_user_config()
-    
-    # 检查是否有基本配置
-    has_model_config = bool(user_config.get("model_config", {}))
-    has_working_config = "config_completed" in user_config
-    
-    return has_model_config and has_working_config
-
-def show_initial_config_wizard():
-    """显示初始配置向导"""
-    st.title("🚀 欢迎使用AI虚假新闻检测器")
-    st.markdown("""
-    在开始使用前，请先进行一次性配置。
-    配置完成后，您就可以直接使用系统了。
-    """)
-    
-    st.divider()
-    
-    # 自动检测配置
-    st.subheader("🔍 步骤1: 检测本地环境")
-    
-    auto_config = detect_available_services()
-    if auto_config:
-        st.success(f"✅ 检测到可用服务: {auto_config['name']}")
-        st.info(f"📍 服务地址: {auto_config['url']}")
-        st.info(f"🤖 可用模型: {len(auto_config['available_models'])}个")
-        
-        # 显示模型选择
-        st.subheader("🤖 选择模型")
-        
-        # 分类模型
-        chat_models, embedding_models = categorize_models(auto_config['available_models'])
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if chat_models:
-                selected_chat_model = st.selectbox(
-                    "💬 聊天模型",
-                    options=chat_models,
-                    help=f"共{len(chat_models)}个聊天模型可用"
-                )
-            else:
-                st.warning("未找到聊天模型")
-                selected_chat_model = None
-        
-        with col2:
-            if embedding_models:
-                selected_embedding_model = st.selectbox(
-                    "🧠 嵌入模型",
-                    options=embedding_models,
-                    help=f"共{len(embedding_models)}个嵌入模型可用"
-                )
-            else:
-                # 如果没有嵌入模型，从聊天模型中选择一个
-                if chat_models:
-                    selected_embedding_model = st.selectbox(
-                        "🧠 嵌入模型",
-                        options=chat_models,
-                        help="未找到专用嵌入模型，使用聊天模型代替"
-                    )
-                else:
-                    st.warning("未找到可用模型")
-                    selected_embedding_model = None
-        
-        if selected_chat_model and selected_embedding_model:
-            # 添加搜索引擎选择
-            st.subheader("🔍 选择搜索引擎")
-            search_options = {
-                    "🦆 DuckDuckGo (推荐)": "duckduckgo",
-                    "🔍 SearXNG (本地)": "searxng",
-                    "🌐 Bocha (API)": "bocha"
-                }
-            
-            selected_search = st.radio(
-                "搜索引擎",
-                options=list(search_options.keys()),
-                help="DuckDuckGo 无需配置，SearXNG 需要本地部署",
-                horizontal=True
-            )
-            
-            search_provider = search_options[selected_search]
-            searxng_url = None
-            
-            # 如果选择了 SearXNG，让用户配置地址
-            if search_provider == "searxng":
-                searxng_url = st.text_input(
-                    "🌐 SearXNG 服务地址",
-                    value="http://localhost:8090",
-                    help="请输入您的 SearXNG 实例地址",
-                    placeholder="http://localhost:8090"
-                )
-            
-            elif search_provider == "bocha":
-                bocha_api_key = st.text_input(
-                    "🔑 Bocha API Key",
-                    type="password",
-                    help="请输入您的 Bocha API 密钥",
-                    placeholder="sk-..."
-                )
-                if searxng_url:
-                    # 测试 SearXNG 连接
-                    searxng_available = test_searxng_connection(searxng_url)
-                    if searxng_available:
-                        st.success("✅ SearXNG 服务可用")
-                    else:
-                        st.warning("⚠️ SearXNG 服务不可用，请检查地址或服务状态")
-            
-            if st.button("✨ 使用此配置", type="primary", use_container_width=True):
-                auto_config['chat_model'] = selected_chat_model
-                auto_config['embedding_model'] = selected_embedding_model
-                auto_config['search_provider'] = search_provider
-                if searxng_url:
-                    auto_config['searxng_url'] = searxng_url
-                save_auto_config(auto_config)
-                st.success("✅ 配置完成！正在进入主界面...")
-                time.sleep(1)
-                st.rerun()
-                return
-    else:
-        st.warning("⚠️ 未检测到本地AI服务，请手动配置")
-    
-    st.divider()
-    
-    # 手动配置
-    st.subheader("⚙️ 步骤2: 手动配置")
-    
-    # 简化的配置选项
-    config_option = st.radio(
-        "选择AI服务类型",
-        options=[
-            "🚀 Ollama (本地推荐)",
-            "💻 LM Studio (本地图形界面)", 
-            "☁️ OpenAI (云端服务)",
-            "🔧 自定义配置"
-        ],
-        help="选择您要使用的AI服务类型"
-    )
-    
-    manual_config = None
-    
-    if "🚀 Ollama" in config_option:
-        st.subheader("🚀 Ollama 配置")
-        models = get_models_for_provider("ollama", "http://localhost:11434")
-        if models:
-            chat_models, embedding_models = categorize_models(models)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                chat_model = st.selectbox("💬 聊天模型", options=chat_models if chat_models else models)
-            with col2:
-                embedding_model = st.selectbox("🧠 嵌入模型", options=embedding_models if embedding_models else models)
-            
-            if chat_model and embedding_model:
-                # 添加搜索引擎选择
-                st.subheader("🔍 选择搜索引擎")
-                search_options = {
-                    "🦆 DuckDuckGo (推荐)": "duckduckgo",
-                    "🔍 SearXNG (本地)": "searxng",
-                    "🌐 Bocha (API)": "bocha"
-                }
-                
-                selected_search = st.radio(
-                    "搜索引擎",
-                    options=list(search_options.keys()),
-                    help="DuckDuckGo 无需配置，SearXNG 需要本地部署",
-                    horizontal=True,
-                    key="ollama_search"
-                )
-                
-                search_provider = search_options[selected_search]
-                searxng_url = None
-                
-                # 如果选择了 SearXNG，让用户配置地址
-                if search_provider == "searxng":
-                    searxng_url = st.text_input(
-                        "🌐 SearXNG 服务地址",
-                        value="http://localhost:8090",
-                        help="请输入您的 SearXNG 实例地址",
-                        placeholder="http://localhost:8090",
-                        key="ollama_searxng_url"
-                    )
-
-                elif search_provider == "bocha":
-                    bocha_api_key = st.text_input(
-                        "🔑 Bocha API Key",
-                        type="password",
-                        help="请输入您的 Bocha API 密钥",
-                        placeholder="sk-..."
-                    )
-                manual_config = {
-                    "name": "Ollama",
-                    "provider": "ollama",
-                    "url": "http://localhost:11434/v1",
-                    "chat_model": chat_model,
-                    "embedding_model": embedding_model,
-                    "search_provider": search_provider
-                }
-                
-                if searxng_url:
-                    manual_config["searxng_url"] = searxng_url
-        else:
-            st.warning("⚠️ 无法连接到 Ollama 服务，请确保 Ollama 已启动")
-    
-    elif "💻 LM Studio" in config_option:
-        st.subheader("💻 LM Studio 配置")
-        models = get_models_for_provider("lmstudio", "http://localhost:1234")
-        if models:
-            chat_models, embedding_models = categorize_models(models)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                chat_model = st.selectbox("💬 聊天模型", options=chat_models if chat_models else models)
-            with col2:
-                embedding_model = st.selectbox("🧠 嵌入模型", options=embedding_models if embedding_models else models)
-            
-            if chat_model and embedding_model:
-                # 添加搜索引擎选择
-                st.subheader("🔍 选择搜索引擎")
-                search_options = {
-                    "🦆 DuckDuckGo (推荐)": "duckduckgo",
-                    "🔍 SearXNG (本地)": "searxng",
-                    "🌐 Bocha (API)": "bocha"
-                }
-                
-                selected_search = st.radio(
-                    "搜索引擎",
-                    options=list(search_options.keys()),
-                    help="DuckDuckGo 无需配置，SearXNG 需要本地部署",
-                    horizontal=True,
-                    key="lmstudio_search"
-                )
-                
-                search_provider = search_options[selected_search]
-                searxng_url = None
-                
-                # 如果选择了 SearXNG，让用户配置地址
-                if search_provider == "searxng":
-                    searxng_url = st.text_input(
-                        "🌐 SearXNG 服务地址",
-                        value="http://localhost:8090",
-                        help="请输入您的 SearXNG 实例地址",
-                        placeholder="http://localhost:8090",
-                        key="lmstudio_searxng_url"
-                    )
-                # 新增 Bocha 的输入框
-                elif search_provider == "bocha":
-                    bocha_api_key = st.text_input(
-                        "🔑 Bocha API Key",
-                        type="password",
-                        help="请输入您的 Bocha API 密钥",
-                        placeholder="sk-..."
-                    )
-                
-                manual_config = {
-                    "name": "LM Studio", 
-                    "provider": "lmstudio",
-                    "url": "http://localhost:1234/v1",
-                    "chat_model": chat_model,
-                    "embedding_model": embedding_model,
-                    "search_provider": search_provider
-                }
-                
-                if searxng_url:
-                    manual_config["searxng_url"] = searxng_url
-        else:
-            st.warning("⚠️ 无法连接到 LM Studio 服务，请确保 LM Studio 已启动")
-    
-    elif "☁️ OpenAI" in config_option:
-        st.subheader("☁️ OpenAI 配置")
-        api_key = st.text_input("🔑 OpenAI API Key", type="password", help="请输入您的OpenAI API密钥")
-        if api_key:
-            # 预定义 OpenAI 模型（因为需要 API Key 才能获取）
-            openai_models = {
-                "💬 聊天模型": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"],
-                "🧠 嵌入模型": ["text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002"]
-            }
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                chat_model = st.selectbox("💬 聊天模型", options=openai_models["💬 聊天模型"])
-            with col2:
-                embedding_model = st.selectbox("🧠 嵌入模型", options=openai_models["🧠 嵌入模型"])
-            
-            # 添加搜索引擎选择
-            st.subheader("🔍 选择搜索引擎")
-            search_options = {
-                    "🦆 DuckDuckGo (推荐)": "duckduckgo",
-                    "🔍 SearXNG (本地)": "searxng",
-                    "🌐 Bocha (API)": "bocha"
-                }
-            
-            selected_search = st.radio(
-                "搜索引擎",
-                options=list(search_options.keys()),
-                help="DuckDuckGo 无需配置，SearXNG 需要本地部署",
-                horizontal=True,
-                key="openai_search"
-            )
-            
-            search_provider = search_options[selected_search]
-            searxng_url = None
-            
-            # 如果选择了 SearXNG，让用户配置地址
-            if search_provider == "searxng":
-                searxng_url = st.text_input(
-                    "🌐 SearXNG 服务地址",
-                    value="http://localhost:8090",
-                    help="请输入您的 SearXNG 实例地址",
-                    placeholder="http://localhost:8090",
-                    key="openai_searxng_url"
-                )
-            # 新增 Bocha 的输入框
-            elif search_provider == "bocha":
-                bocha_api_key = st.text_input(
-                    "🔑 Bocha API Key",
-                    type="password",
-                    help="请输入您的 Bocha API 密钥",
-                    placeholder="sk-..."
-                )
-            
-            manual_config = {
-                "name": "OpenAI",
-                "provider": "openai", 
-                "url": "https://api.openai.com/v1",
-                "api_key": api_key,
-                "chat_model": chat_model,
-                "embedding_model": embedding_model,
-                "search_provider": search_provider
-            }
-            
-            if searxng_url:
-                manual_config["searxng_url"] = searxng_url
-    
-    elif "🔧 自定义" in config_option:
-        with st.expander("🚀 自定义配置", expanded=True):
-            url = st.text_input("🌐 API地址", placeholder="http://localhost:8000/v1")
-            
-            if url:
-                # 尝试获取模型列表
-                models = get_models_for_provider("custom", url.rstrip('/v1'))
-                
-                if models:
-                    st.success(f"✅ 检测到 {len(models)} 个可用模型")
-                    chat_models, embedding_models = categorize_models(models)
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        chat_model = st.selectbox("💬 聊天模型", options=chat_models if chat_models else models)
-                    with col2:
-                        embedding_model = st.selectbox("🧠 嵌入模型", options=embedding_models if embedding_models else models)
-                    
-                    if chat_model and embedding_model:
-                        # 添加搜索引擎选择
-                        st.subheader("🔍 选择搜索引擎")
-                        search_options = {
-                            "🦆 DuckDuckGo (推荐)": "duckduckgo",
-                            "🔍 SearXNG (本地)": "searxng",
-                            "🌐 Bocha (API)": "bocha"
-                        }
-                        
-                        selected_search = st.radio(
-                            "搜索引擎",
-                            options=list(search_options.keys()),
-                            help="DuckDuckGo 无需配置，SearXNG 需要本地部署",
-                            horizontal=True,
-                            key="custom_search_1"
-                        )
-                        
-                        search_provider = search_options[selected_search]
-                        searxng_url = None
-                        
-                        # 如果选择了 SearXNG，让用户配置地址
-                        if search_provider == "searxng":
-                            searxng_url = st.text_input(
-                                "🌐 SearXNG 服务地址",
-                                value="http://localhost:8090",
-                                help="请输入您的 SearXNG 实例地址",
-                                placeholder="http://localhost:8090",
-                                key="custom_searxng_url_1"
-                            )
-                        elif search_provider == "bocha":
-                            bocha_api_key = st.text_input(
-                                "🔑 Bocha API Key",
-                                type="password",
-                                help="请输入您的 Bocha API 密钥",
-                                placeholder="sk-..."
-                            )
-                        
-                        manual_config = {
-                            "name": "自定义配置",
-                            "provider": "custom",
-                            "url": url,
-                            "chat_model": chat_model,
-                            "embedding_model": embedding_model,
-                            "search_provider": search_provider
-                        }
-                        
-                        if searxng_url:
-                            manual_config["searxng_url"] = searxng_url
-                else:
-                    st.warning("⚠️ 无法从此地址获取模型列表，请检查地址是否正确")
-                    # 手动输入模型名
-                    st.info("📝 请手动输入模型名称")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        chat_model = st.text_input("💬 聊天模型", placeholder="例如: llama2")
-                    with col2:
-                        embedding_model = st.text_input("🧠 嵌入模型", placeholder="例如: nomic-embed-text")
-                    
-                    if chat_model and embedding_model:
-                        # 添加搜索引擎选择
-                        st.subheader("🔍 选择搜索引擎")
-                        search_options = {
-                            "🦆 DuckDuckGo (推荐)": "duckduckgo",
-                            "🔍 SearXNG (本地)": "searxng",
-                            "🌐 Bocha (API)": "bocha"
-                        }
-                        
-                        selected_search = st.radio(
-                            "搜索引擎",
-                            options=list(search_options.keys()),
-                            help="DuckDuckGo 无需配置，SearXNG 需要本地部署",
-                            horizontal=True,
-                            key="custom_search_2"
-                        )
-                        
-                        search_provider = search_options[selected_search]
-                        searxng_url = None
-                        
-                        # 如果选择了 SearXNG，让用户配置地址
-                        if search_provider == "searxng":
-                            searxng_url = st.text_input(
-                                "🌐 SearXNG 服务地址",
-                                value="http://localhost:8090",
-                                help="请输入您的 SearXNG 实例地址",
-                                placeholder="http://localhost:8090",
-                                key="custom_searxng_url_2"
-                            )
-                        elif search_provider == "bocha":
-                            bocha_api_key = st.text_input(
-                                "🔑 Bocha API Key",
-                                type="password",
-                                help="请输入您的 Bocha API 密钥",
-                                placeholder="sk-..."
-                            )
-
-                        
-                        manual_config = {
-                            "name": "自定义配置",
-                            "provider": "custom",
-                            "url": url,
-                            "chat_model": chat_model,
-                            "embedding_model": embedding_model,
-                            "search_provider": search_provider
-                        }
-                        
-                        if searxng_url:
-                            manual_config["searxng_url"] = searxng_url
-    
-    # 测试配置
-    if manual_config:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("🔗 测试连接", use_container_width=True):
-                with st.spinner("正在测试连接..."):
-                    if test_config_connection(manual_config):
-                        st.success("✅ 连接成功！")
-                    else:
-                        st.error("❌ 连接失败，请检查配置")
-        
-        with col2:
-            if st.button("✨ 保存配置", type="primary", use_container_width=True):
-                save_manual_config(manual_config)
-                st.success("✅ 配置完成！正在进入主界面...")
-                time.sleep(1)
-                st.rerun()
-
-def detect_available_services():
-    """检测可用的本地服务并获取模型列表"""
-    import requests
-    
-    services = [
-        ("http://localhost:11434", "Ollama", "ollama"),
-        ("http://localhost:1234", "LM Studio", "lmstudio"),
-        ("http://localhost:8000", "本地API", "local_api")
-    ]
-    
-    for url, name, provider in services:
-        try:
-            # 先测试基本连接
-            response = requests.get(f"{url}/v1/models", timeout=3)
-            if response.status_code == 200:
-                # 获取模型列表
-                models_data = response.json()
-                available_models = []
-                
-                if "data" in models_data:
-                    # OpenAI格式: {"data": [{"id": "model_name"}, ...]}
-                    available_models = [model["id"] for model in models_data["data"]]
-                elif "models" in models_data:
-                    # Ollama格式: {"models": [{"name": "model_name"}, ...]}
-                    available_models = [model["name"] for model in models_data["models"]]
-                elif isinstance(models_data, list):
-                    # 简单格式: ["model1", "model2", ...]
-                    available_models = models_data
-                
-                if available_models:
-                    return {
-                        "name": name,
-                        "provider": provider,
-                        "url": f"{url}/v1",
-                        "available_models": available_models
-                    }
-        except:
-            continue
-    return None
-
-def categorize_models(models):
-    """将模型分类为聊天模型和嵌入模型"""
-    chat_models = []
-    embedding_models = []
-    
-    for model in models:
-        model_lower = model.lower()
-        # 判断是否为嵌入模型
-        if any(keyword in model_lower for keyword in ['embed', 'embedding', 'nomic', 'bge', 'gte']):
-            embedding_models.append(model)
-        else:
-            chat_models.append(model)
-    
-    return chat_models, embedding_models
-
-def get_models_for_provider(provider_type, url):
-    """为指定提供商获取模型列表"""
-    import requests
-    
-    try:
-        response = requests.get(f"{url}/models", timeout=5)
-        if response.status_code == 200:
-            models_data = response.json()
-            
-            if "data" in models_data:
-                return [model["id"] for model in models_data["data"]]
-            elif "models" in models_data:
-                return [model["name"] for model in models_data["models"]]
-            elif isinstance(models_data, list):
-                return models_data
-        return []
-    except:
-        return []
-
-def test_searxng_connection(searxng_url="http://localhost:8090"):
-    """测试 SearXNG 连接"""
-    try:
-        import requests
-        # 确保 URL格式正确
-        if not searxng_url.startswith('http'):
-            searxng_url = f"http://{searxng_url}"
-        
-        # 测试搜索接口
-        response = requests.get(f"{searxng_url}/search", 
-                               params={"q": "test", "format": "json"}, 
-                               timeout=3)
-        return response.status_code == 200
-    except:
-        return False
-
-def test_config_connection(config):
-    """测试配置连接"""
-    try:
-        import requests
-        response = requests.get(f"{config['url']}/models", timeout=3)
-        return response.status_code == 200
-    except:
-        return False
-
-def save_auto_config(config):
-    """保存自动检测的配置"""
-    from user_config import get_user_config_manager
-    
-    config_manager = get_user_config_manager()
-    if config_manager:
-        user_config = {
-            "model_config": {
-                "providers": {
-                    config["provider"]: {
-                        "base_url": config["url"]
-                    }
-                },
-                "defaults": {
-                    "llm_provider": config["provider"],
-                    "llm_model": config["chat_model"],
-                    "embedding_model": config["embedding_model"],
-                    "search_provider": config.get("search_provider", "duckduckgo"),
-                    "output_language": "zh"
-                }
-            },
-            "config_completed": True,
-            "config_source": "auto"
-        }
-        
-        # 初始化 search_config（如果不存在）
-        if "search_config" not in user_config:
-            user_config["search_config"] = {"search_providers": {}}
-            
-        # 如果有自定义 SearXNG 地址，保存到搜索配置中
-        if config.get("searxng_url"):
-            user_config["search_config"]["search_providers"]["searxng"] = {
-                "base_url": config["searxng_url"]
-            }
-            
-        # 如果有 Bocha API Key，保存到搜索配置中
-        if config.get("bocha_api_key"):
-            user_config["search_config"]["search_providers"]["bocha"] = {
-                "api_key": config["bocha_api_key"]
-            }
-        
-        config_manager.save_user_config(user_config)
-
-def save_manual_config(config):
-    """保存手动配置"""
-    from user_config import get_user_config_manager
-    
-    config_manager = get_user_config_manager()
-    if config_manager:
-        user_config = {
-            "model_config": {
-                "providers": {
-                    config["provider"]: {
-                        "base_url": config["url"]
-                    }
-                },
-                "defaults": {
-                    "llm_provider": config["provider"],
-                    "llm_model": config["chat_model"], 
-                    "embedding_model": config["embedding_model"],
-                    "search_provider": config.get("search_provider", "duckduckgo"),
-                    "output_language": "zh"
-                }
-            },
-            "config_completed": True,
-            "config_source": "manual"
-        }
-        
-        if "api_key" in config:
-            user_config["model_config"]["providers"][config["provider"]]["api_key"] = config["api_key"]
-        
-        # 初始化 search_config（如果不存在）
-        if "search_config" not in user_config:
-            user_config["search_config"] = {"search_providers": {}}
-            
-        # 如果有自定义 SearXNG 地址，保存到搜索配置中
-        if config.get("searxng_url"):
-            user_config["search_config"]["search_providers"]["searxng"] = {
-                "base_url": config["searxng_url"]
-            }
-            
-        # 如果有 Bocha API Key，保存到搜索配置中
-        if config.get("bocha_api_key"):
-            user_config["search_config"]["search_providers"]["bocha"] = {
-                "api_key": config["bocha_api_key"]
-            }
-        
-        config_manager.save_user_config(user_config)
-
-def get_saved_config_info():
-    """获取已保存的配置信息用于显示"""
-    from user_config import get_user_config_manager
-    
-    config_manager = get_user_config_manager()
-    if not config_manager:
-        return None
-    
-    user_config = config_manager.get_user_config()
-    model_config = user_config.get("model_config", {})
-    defaults = model_config.get("defaults", {})
-    
-    return {
-        "model_name": defaults.get("llm_model", "未配置"),
-        "search_name": get_search_display_name(defaults.get("search_provider", "duckduckgo"))
+    /* 强制全局浅色背景 */
+    .stApp {
+        background-color: #FFFFFF !important;
+        color: #1F2937 !important;
     }
 
-def get_search_display_name(search_provider):
-    """获取搜索引擎显示名称"""
-    search_names = {
-        "duckduckgo": "DuckDuckGo",
-        "searxng": "SearXNG"
+    /* 优化主内容区宽度和边距，为左侧自定义栏腾出空间 */
+    .block-container {
+        margin-left: 280px !important;
+        max-width: 900px !important;
+        padding-top: 2rem !important;
+        padding-bottom: 6rem !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
     }
-    return search_names.get(search_provider, search_provider)
-
-def get_config_parameters():
-    """从已保存的配置获取参数"""
-    from user_config import get_user_config_manager
     
-    config_manager = get_user_config_manager()
-    if not config_manager:
-        return None
+    /* 确保所有主内容区的元素都遵循左边距 */
+    .main .block-container {
+        margin-left: 280px !important;
+    }
     
-    user_config = config_manager.get_user_config()
-    model_config = user_config.get("model_config", {})
-    
-    if not model_config:
-        return None
-    
-    providers = model_config.get("providers", {})
-    defaults = model_config.get("defaults", {})
-    
-    provider_key = defaults.get("llm_provider")
-    if not provider_key or provider_key not in providers:
-        return None
-    
-    provider_config = providers[provider_key]
-    
-    return {
-        "provider_key": provider_key,
-        "api_base": provider_config.get("base_url"),
-        "chat_model": defaults.get("llm_model"),
-        "embedding_model": defaults.get("embedding_model"),
-        "search_provider": defaults.get("search_provider", "duckduckgo"),
-        "selected_language": defaults.get("output_language", "zh"),
-        "provider_config": provider_config
+    /* 修复输入框容器的定位 */
+    [data-testid="stChatInputContainer"] {
+        margin-left: 280px !important;
+        max-width: calc(100vw - 280px) !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
     }
 
-def reset_user_config():
-    """重置用户配置"""
-    from user_config import get_user_config_manager
+    /* ---------------- 自定义左侧边栏 ---------------- */
+    #custom-sidebar {
+        position: fixed;
+        top: 0; left: 0; bottom: 0;
+        width: 280px;
+        background-color: #F9FAFB;
+        border-right: 1px solid #E5E7EB;
+        padding: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        z-index: 999999;
+    }
+
+    /* ---------------- 原生组件深度美化 ---------------- */
+    /* AI 思考状态器 (st.status) */
+    [data-testid="stStatusWidget"] {
+        background-color: #F3F4F6 !important;
+        border: 1px solid #E5E7EB !important;
+        border-radius: 0.75rem !important;
+    }
+    [data-testid="stStatusWidget"] summary { color: #1F2937 !important; font-weight: 500; }
+    [data-testid="stStatusWidget"] [data-testid="stMarkdownContainer"] p { color: #4B5563 !important; }
+
+    /* 折叠面板 (st.expander) */
+    [data-testid="stExpander"] {
+        background-color: #F3F4F6 !important;
+        border: 1px solid #E5E7EB !important;
+        border-radius: 0.5rem !important;
+    }
+    [data-testid="stExpander"] summary p { color: #1F2937 !important; font-weight: 500; }
+
+    /* 底部聊天输入框 (st.chat_input) */
+    [data-testid="stChatInput"] { 
+        background-color: #FFFFFF !important; 
+        border: none !important;
+    }
     
-    config_manager = get_user_config_manager()
-    if config_manager:
-        config_manager.reset_config()
-
-'''def show_simplified_fact_check_page():
-    """显示简化的事实核查页面 - 无复杂配置界面"""
-    st.markdown(
-        """
-    本应用程序使用本地AI模型验证陈述的准确性。
-    请在下方输入需要核查的新闻，系统将检索网络证据进行新闻核查。
-    """
-    )
-
-    # 简化的侧边栏 - 只显示状态和基本信息
-    with st.sidebar:
-        st.header("📊 系统状态")
-        
-        # 获取已保存的配置
-        config_info = get_saved_config_info()
-        if config_info:
-            st.success(f"✅ AI模型: {config_info['model_name']}")
-            st.success(f"✅ 搜索引擎: {config_info['search_name']}")
-        
-        st.divider()
-        
-        # 快速设置 - 只显示必要的
-        with st.expander("⚙️ 快速设置"):
-            temperature = st.slider(
-                "创造性",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.0,
-                step=0.1,
-                help="较低的值使响应更确定，较高的值使响应更具创造性",
-            )
-            language = st.selectbox(
-                "输出语言",
-                options=["自动检测", "中文", "English"],
-                help="选择AI回复的语言"
-            )
-        
-        st.divider()
-        
-        # 配置管理链接
-        if st.button("🔧 重新配置", help="重新设置 AI 模型和服务"):
-            reset_user_config()
-            st.rerun()
-        
-        st.divider()
-        st.markdown("### 关于")
-        st.markdown("虚假新闻检测器:")
-        st.markdown("1. 从新闻中提取核心声明")
-        st.markdown("2. 在网络上搜索证据")
-        st.markdown("3. 使用BGE-M3按相关性对证据进行排名")
-        st.markdown("4. 基于证据提供结论")
-        st.markdown("使用Streamlit、BGE-M3和LLM开发 ❤️")
-
-    # 使用已保存的配置获取参数
-    config_params = get_config_parameters()
-    if not config_params:
-        st.error("配置获取失败，请重新配置")
-        if st.button("重新配置"):
-            reset_user_config()
-            st.rerun()
-        return
-
-    # 以下的逻辑保持不变，只是使用保存的配置参数
-    # 如果不存在，初始化会话状态以存储聊天历史
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # 显示聊天历史
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # 主输入区域
-    user_input = st.chat_input("请在下方输入需要核查的新闻...")
-
-    if user_input:
-        # 将用户消息添加到聊天历史
-        st.session_state.messages.append({"role": "user", "content": user_input})
-
-        # 显示用户消息
-        with st.chat_message("user"):
-            st.markdown(user_input)
-
-        # 创建助手消息容器用于流式输出
-        assistant_message = st.chat_message("assistant")
-
-        # 创建空的placeholder组件用于逐步更新
-        claim_placeholder = assistant_message.empty()
-        evidence_placeholder = assistant_message.empty()
-        verdict_placeholder = assistant_message.empty()
-
-        # 检查模型配置是否有效 - 使用保存的配置
-        api_base = config_params["api_base"]
-        chat_model = config_params["chat_model"]
-        embedding_model = config_params["embedding_model"]
-        search_provider = config_params["search_provider"]
-        selected_language = config_params["selected_language"]
-        provider_config = config_params["provider_config"]
-        
-        if not api_base or not chat_model:
-            st.error("配置信息不完整，请重新配置模型提供商")
-            st.stop()
-
-        if not embedding_model:
-            st.error("配置信息不完整，请重新配置嵌入模型")
-            st.stop()
-
-        # 获取配置
-        embedding_api_key = provider_config.get("api_key", "lm-studio")
-        search_config = model_manager.get_search_provider_config(search_provider)
-        searxng_url = search_config.get("base_url", "http://localhost:8090")
-        
-        # 使用侧边栏的设置覆盖默认值
-        max_tokens = 1000  # 固定值，简化配置
-
-        # 初始化FactChecker
-        fact_checker = FactChecker(
-            api_base=api_base,
-            model=chat_model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            embedding_base_url=api_base,
-            embedding_model=embedding_model,
-            embedding_api_key=embedding_api_key,
-            search_engine=search_provider,
-            searxng_url=searxng_url,
-            output_language=selected_language,
-            search_config=search_config,
-        )
-
-        # 第1步：提取声明
-        claim_placeholder.markdown("### 🔍 正在提取新闻的核心声明...")
-        claim = fact_checker.extract_claim(user_input)
-        # 处理claim字符串，提取"claim:"后面的内容
-        if "claim:" in claim.lower():
-            claim = claim.split("claim:")[-1].strip()
-        claim_placeholder.markdown(f"### 🔍 提取新闻的核心声明\n\n{claim}")
-
-        # 第2步：搜索证据
-        evidence_placeholder.markdown("### 🌐 正在搜索相关证据...")
-        # 从配置中获取搜索结果数量
-        search_max_results = search_config.get("max_results", 5)
-        evidence_docs = fact_checker.search_evidence(claim, search_max_results)
-
-        # 第3步：获取相关证据块
-        evidence_placeholder.markdown("### 🌐 正在分析证据相关性...")
-        # 动态计算展示的证据数量：基于搜索配置 * 语言数量 * 扩展倍数
-        base_results = search_config.get("max_results", 5)
-        language_count = 3  # 中英日三种语言
-        expansion_factor = (
-            model_manager.get_current_config()
-            .get("defaults", {})
-            .get("evidence_display_multiplier", 2.0)
-        )
-        max_evidence_display = int(base_results * language_count * expansion_factor)
-
-        evidence_chunks = fact_checker.get_evidence_chunks(
-            evidence_docs, claim, top_k=max_evidence_display
-        )
-
-        # 显示证据结果
-        evidence_md = "### 🔗 证据来源\n\n"
-        # 使用相同的证据块进行显示和评估
-        evaluation_evidence = (
-            evidence_chunks[:-1] if len(evidence_chunks) > 1 else evidence_chunks
-        )
-
-        for j, chunk in enumerate(evaluation_evidence):
-            evidence_md += f"**[{j+1}]:**\n"
-            evidence_md += f"{chunk['text']}\n"
-            evidence_md += f"来源: {chunk['source']}\n\n"
-
-        evidence_placeholder.markdown(evidence_md)
-
-        # 第4步：评估声明
-        verdict_placeholder.markdown("### ⚖️ 正在进行事件溯源与多维度核查...")
-        
-        # 传入 user_input 以便 LLM 获取原始文本进行事实/观点拆解
-        evaluation = fact_checker.evaluate_claim(claim, evaluation_evidence, original_text=user_input)
-
-        # 确定结论表情符号
-        verdict = evaluation["verdict"]
-        if verdict.upper() == "TRUE":
-            emoji = "✅"
-            verdict_cn = "正确"
-        elif verdict.upper() == "FALSE":
-            emoji = "❌"
-            verdict_cn = "错误"
-        elif verdict.upper() == "PARTIALLY TRUE":
-            emoji = "⚠️"
-            verdict_cn = "部分正确"
-        else:
-            emoji = "❓"
-            verdict_cn = "无法验证"
-
-        # 显示最终结论（直接渲染 LLM 输出的丰富多维度报告）
-        verdict_md = f"### {emoji} 最终判定: {verdict_cn}\n\n"
-        verdict_md += f"{evaluation['reasoning']}\n\n"
-
-        verdict_placeholder.markdown(verdict_md)
-
-        # 整合完整的响应内容用于保存到聊天历史
-        full_response = f"""
-### 🔍 提取新闻的核心声明
-
-{claim}
-
----
-
-{evidence_md}
-
----
-
-{verdict_md}
+    /* 输入框容器定位 - 使用多个选择器确保覆盖 */
+    [data-testid="stChatInput"] > div,
+    [data-testid="stChatInputContainer"],
+    form[data-testid="stChatInputForm"],
+    section[data-testid="stChatInputContainer"],
+    div[data-testid="stChatInputContainer"] {
+        margin-left: 280px !important;
+        max-width: calc(100vw - 300px) !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+    
+    /* 确保输入框本身也有正确的定位 */
+    [data-testid="stChatInput"] {
+        margin-left: 280px !important;
+        max-width: calc(100vw - 300px) !important;
+    }
+    
+    [data-testid="stChatInput"] textarea {
+        background-color: #FFFFFF !important;
+        color: #1F2937 !important;
+        border: 1px solid #D1D5DB !important;
+        border-radius: 1rem !important;
+        padding: 1rem !important;
+    }
+    [data-testid="stChatInput"] textarea:focus {
+        border-color: #2A8BF5 !important;
+        box-shadow: 0 0 0 1px #2A8BF5 !important;
+    }
+    
+    /* 滚动条浅色化 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #F3F4F6; }
+    ::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+</style>
 """
+st.markdown(tailwind_and_custom_css, unsafe_allow_html=True)
 
-        # 添加助手响应到聊天历史
-        st.session_state.messages.append(
-            {"role": "assistant", "content": full_response}
-        )
+# ==========================================
+# 2.5 报告内容渲染函数
+# ==========================================
+def render_verification_report(verdict_data, content_verification, propagation_timeline):
+    """
+    渲染核查报告的核心内容
+    
+    参数:
+        verdict_data: dict - 包含 verdict (True/False/Partially True), verdict_cn, reasoning
+        content_verification: dict - 包含 objective_facts, misleading, subjective_opinion
+        propagation_timeline: list - 包含时间线事件列表，每个事件包含 date, source, description
+    """
+    # 根据 verdict 确定样式
+    verdict_styles = {
+        "TRUE": {
+            "bg": "bg-[#1A2A1A]",
+            "border": "border-green-900/60",
+            "text": "text-green-500",
+            "text_light": "text-green-200/80",
+            "emoji": "✅"
+        },
+        "FALSE": {
+            "bg": "bg-[#2A1818]",
+            "border": "border-red-900/60",
+            "text": "text-red-500",
+            "text_light": "text-red-200/80",
+            "emoji": "❌"
+        },
+        "PARTIALLY_TRUE": {
+            "bg": "bg-[#2A2518]",
+            "border": "border-yellow-900/60",
+            "text": "text-yellow-500",
+            "text_light": "text-yellow-200/80",
+            "emoji": "⚠️"
+        }
+    }
+    
+    verdict = verdict_data.get("verdict", "FALSE").upper()
+    style = verdict_styles.get(verdict, verdict_styles["FALSE"])
+    
+    html = f"""
+    <div class="{style['bg']} border {style['border']} p-5 rounded-lg mb-6 shadow-sm">
+        <h2 class="text-[17px] font-bold {style['text']} m-0 flex items-center gap-2">
+            <span>{style['emoji']}</span> Overall Verdict: {verdict_data.get('verdict_en', verdict)} ({verdict_data.get('verdict_cn', '未知')})
+        </h2>
+        <p class="mt-2 text-[14px] {style['text_light']} leading-relaxed">
+            {verdict_data.get('reasoning', 'No reasoning provided.')}
+        </p>
+    </div>
 
-        # 保存到数据库
-        db_utils.save_fact_check(
-            st.session_state.user_id,
-            user_input,
-            claim,
-            verdict,
-            evaluation["reasoning"],
-            evaluation_evidence,
-        )
-'''
-def markdown_to_html(text):
-    """简单的 Markdown 转 HTML 辅助函数，确保 Tailwind 卡片内的文本样式正常"""
-    if not text:
-        return ""
-    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text) # 加粗
-    text = text.replace('\n', '<br>') # 换行
-    return text
+    <div class="bg-[#1F2937] border border-gray-800 rounded-lg p-5 mb-6">
+        <h3 class="text-gray-300 font-semibold mb-4 flex items-center gap-2 text-sm">
+            <span class="w-1.5 h-1.5 rounded-full bg-gray-400"></span> Content Verification
+        </h3>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+"""
+    
+    # 客观事实
+    if content_verification.get("objective_facts"):
+        fact = content_verification["objective_facts"]
+        html += f"""
+            <div class="bg-[#111827] border border-gray-800 rounded-lg overflow-hidden h-full">
+                <div class="bg-green-900/30 text-green-400 text-xs font-bold px-3 py-2 flex items-center gap-1.5 border-b border-green-900/40">
+                    <span>✅</span> Objective Facts
+                </div>
+                <div class="p-4 text-sm text-gray-300 leading-relaxed">
+                    <p class="mb-2">Excerpt: "{fact.get('excerpt', '')}"</p>
+                    <p class="text-gray-400">Verification: {fact.get('verification', '')} <a href="{fact.get('source_link', '#')}" class="text-[#2A8BF5] hover:underline">Link to source</a></p>
+                </div>
+            </div>
+"""
+    
+    # 误导/夸大
+    if content_verification.get("misleading"):
+        misleading = content_verification["misleading"]
+        html += f"""
+            <div class="bg-[#111827] border border-gray-800 rounded-lg overflow-hidden h-full">
+                <div class="bg-red-900/30 text-red-400 text-xs font-bold px-3 py-2 flex items-center gap-1.5 border-b border-red-900/40">
+                    <span>🚨</span> Misleading / Exaggerated
+                </div>
+                <div class="p-4 text-sm text-gray-300 leading-relaxed">
+                    <p class="mb-2">Excerpt: "{misleading.get('excerpt', '')}"</p>
+                    <p class="text-gray-400">Verification: {misleading.get('verification', '')} <a href="{misleading.get('source_link', '#')}" class="text-[#2A8BF5] hover:underline">Link to source</a></p>
+                </div>
+            </div>
+"""
+    
+    html += """
+        </div>
+"""
+    
+    # 主观观点
+    if content_verification.get("subjective_opinion"):
+        opinion = content_verification["subjective_opinion"]
+        html += f"""
+        <div class="bg-[#111827] border border-gray-800 rounded-lg overflow-hidden mt-4">
+            <div class="bg-blue-900/20 text-blue-400 text-xs font-bold px-3 py-2 flex items-center gap-1.5 border-b border-blue-900/30">
+                <span>💬</span> Subjective Opinion
+            </div>
+            <div class="p-4 text-sm text-gray-300 leading-relaxed flex flex-col md:flex-row md:gap-8">
+                <p>Excerpt: "{opinion.get('excerpt', '')}"</p>
+                <p class="text-gray-400">Verification: {opinion.get('verification', 'Subjective judgment, non-verifiable.')}</p>
+            </div>
+        </div>
+"""
+    
+    html += """
+    </div>
 
-def show_simplified_fact_check_page():
-    """显示沉浸式的事实核查页面 (Dashboard UI)"""
-    # 注入 Tailwind CSS 和自定义基础样式
-    tailwind_css = """
+    <div class="bg-[#1F2937] border border-gray-800 rounded-lg p-5 mb-6">
+        <h3 class="text-gray-300 font-semibold mb-5 flex items-center gap-2 text-sm">
+            <span class="w-1.5 h-1.5 rounded-full bg-[#2A8BF5]"></span> Propagation Timeline
+        </h3>
+        
+        <div class="relative border-l border-gray-700 ml-2 pl-6 py-1 space-y-6">
+"""
+    
+    # 时间线
+    for i, event in enumerate(propagation_timeline):
+        is_first = i == 0
+        dot_class = "bg-[#2A8BF5] shadow-[0_0_8px_rgba(42,139,245,0.8)]" if is_first else "bg-gray-500"
+        html += f"""
+            <div class="relative">
+                <div class="absolute w-2 h-2 {dot_class} rounded-full -left-[28.5px] top-1.5"></div>
+                <div class="text-xs text-gray-400 mb-1">{event.get('date', '')} | Source: {event.get('source', '')}</div>
+                <div class="text-sm text-gray-300">{event.get('description', '')}</div>
+            </div>
+"""
+    
+    html += """
+        </div>
+    </div>
+"""
+    
+    return html
+
+# ==========================================
+# 3. 渲染左侧固定导航栏 (HTML Mock)
+# ==========================================
+# 使用 st.markdown 渲染，全局 CSS 中已定义 #custom-sidebar 的固定定位样式
+sidebar_html = """
+<div id="custom-sidebar">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+<h2 style="font-size: 1.25rem; font-weight: bold; color: #1F2937; display: flex; align-items: center; gap: 0.5rem; margin: 0;">较真 + 🕵️‍♂️</h2>
+<span style="color: #6B7280; cursor: pointer;">«</span>
+</div>
+<div style="font-size: 0.75rem; color: #6B7280; margin-bottom: 1.5rem;">Jiaozhen News Observer</div>
+<button style="background-color: #2A8BF5; color: white; font-weight: 600; padding: 0.5rem 1rem; border-radius: 0.5rem; width: 100%; margin-bottom: 2rem; transition: background-color 0.2s; border: none; cursor: pointer;" onmouseover="this.style.backgroundColor='#2563EB'" onmouseout="this.style.backgroundColor='#2A8BF5'">New Verification</button>
+<div style="display: flex; flex-direction: column; gap: 1rem; font-size: 0.875rem; color: #6B7280; margin-bottom: 2rem;">
+<div style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; transition: color 0.2s;" onmouseover="this.style.color='#1F2937'" onmouseout="this.style.color='#6B7280'"><span style="width: 1rem;">🕒</span> Verification History</div>
+<div style="display: flex; align-items: center; gap: 0.75rem; cursor: pointer; color: #1F2937;"><span style="width: 1rem;">⚙️</span> Model Config</div>
+</div>
+<div style="font-size: 0.75rem; color: #6B7280; margin-bottom: 0.5rem;">Search provider</div>
+<div style="background-color: #FFFFFF; color: #1F2937; font-size: 0.875rem; padding: 0.5rem 0.75rem; border-radius: 0.25rem; border: 1px solid #D1D5DB; margin-bottom: 1.25rem; display: flex; justify-content: space-between; align-items: center; cursor: pointer;"><span>Bocha API</span> <span style="font-size: 0.75rem;">▼</span></div>
+<div style="font-size: 0.75rem; color: #6B7280; margin-bottom: 0.5rem;">Model</div>
+<div style="background-color: #FFFFFF; color: #1F2937; font-size: 0.875rem; padding: 0.5rem 0.75rem; border-radius: 0.25rem; border: 1px solid #D1D5DB; margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; cursor: pointer;"><span>gpt-4o</span> <span style="font-size: 0.75rem;">▼</span></div>
+<div style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.875rem; color: #6B7280; cursor: pointer; transition: color 0.2s;" onmouseover="this.style.color='#1F2937'" onmouseout="this.style.color='#6B7280'"><span style="width: 1rem;">🔧</span> Settings</div>
+<div style="margin-top: auto; border-top: 1px solid #E5E7EB; padding-top: 1.25rem; display: flex; flex-direction: column; gap: 1rem;">
+<div style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.875rem; color: #1F2937; cursor: pointer; transition: color 0.2s;" onmouseover="this.style.color='#111827'" onmouseout="this.style.color='#1F2937'"><span style="width: 1.5rem; height: 1.5rem; border-radius: 50%; background-color: #E5E7EB; display: flex; align-items: center; justify-content: center; font-size: 0.75rem;">👤</span> Observer 001</div>
+<div style="display: flex; align-items: center; gap: 0.75rem; font-size: 0.875rem; color: #6B7280; cursor: pointer; transition: color 0.2s;" onmouseover="this.style.color='#1F2937'" onmouseout="this.style.color='#6B7280'"><span style="width: 1rem;">ⓘ</span> About</div>
+</div>
+</div>
+"""
+st.markdown(sidebar_html, unsafe_allow_html=True)
+
+# ==========================================
+# 4. 渲染右侧主内容区 (User Chat & AI Result)
+# ==========================================
+
+# 4.1 用户输入气泡 (靠右对齐)
+user_msg_html = """
+<div class="flex justify-end mb-6 animate-fade-in-up">
+    <div class="bg-[#2A8BF5] text-white px-5 py-3.5 rounded-2xl rounded-tr-sm max-w-[75%] text-sm leading-relaxed shadow-sm">
+        网传：A公司裁员80%，高管携款潜逃境外，这是真的吗？
+    </div>
+</div>
+"""
+st.markdown(user_msg_html, unsafe_allow_html=True)
+
+# 4.2 AI 思考状态器 (原生 Streamlit Component)
+with st.status("🕵️‍♂️ Agents are working on it...", expanded=True, state="complete") as status:
+    st.write("🔍 Extracting core claims...")
+    st.write("🌐 Tracing evidence across the web...")
+    st.write("🧠 Reranking semantics & cross-checking...")
+    status.update(label="✅ Verification Complete", state="complete", expanded=False)
+
+# 4.3 核心核查报告卡片 (使用 components.html 确保 Tailwind 正确加载)
+report_html_full = """
+<!DOCTYPE html>
+<html>
+<head>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-        .block-container {padding-top: 2rem; padding-bottom: 2rem;}
+        body { margin: 0; padding: 1rem; background: transparent; }
     </style>
-    """
-    st.markdown(tailwind_css, unsafe_allow_html=True)
+</head>
+<body>
+    <div class="mt-4 mb-6">
+        <div class="flex justify-between items-center mb-4 text-xs text-gray-600 border-b border-gray-300 pb-3">
+            <span>Verification Report ID: VRI-20231026-001 | 2023-10-26 18:30</span>
+            <div class="flex gap-2">
+                <button class="px-3 py-1.5 border border-gray-300 rounded text-gray-700 hover:bg-gray-100 transition">Download PDF</button>
+                <button class="px-3 py-1.5 bg-[#2A8BF5] rounded text-white hover:bg-blue-600 transition">Cite Sources</button>
+            </div>
+        </div>
 
-    # 简化的侧边栏 - 只显示状态和基本信息 (保持原有逻辑)
-    with st.sidebar:
-        st.header("📊 系统状态")
-        config_info = get_saved_config_info()
-        if config_info:
-            st.success(f"✅ AI模型: {config_info['model_name']}")
-            st.success(f"✅ 搜索引擎: {config_info['search_name']}")
-        st.divider()
-        with st.expander("⚙️ 快速设置"):
-            temperature = st.slider("创造性", min_value=0.0, max_value=1.0, value=0.0, step=0.1)
-            language = st.selectbox("输出语言", options=["自动检测", "中文", "English"])
-        st.divider()
-        if st.button("🔧 重新配置", help="重新设置 AI 模型和服务"):
-            reset_user_config()
-            st.rerun()
-        st.divider()
-        st.markdown("### 关于")
-        st.markdown("虚假新闻检测器:")
-        st.markdown("1. 提取声明  2. 搜索证据  3. 证据排序  4. 综合溯源")
+        <div class="bg-red-50 border border-red-200 p-5 rounded-lg mb-6 shadow-sm">
+            <h2 class="text-[17px] font-bold text-red-600 m-0 flex items-center gap-2">
+                <span>❌</span> Overall Verdict: False (错误)
+            </h2>
+            <p class="mt-2 text-[14px] text-red-700 leading-relaxed">
+                Based on multiple sources, the core claim about high-level executives absconding with funds is false.
+            </p>
+        </div>
 
-    # 获取配置参数
-    config_params = get_config_parameters()
-    if not config_params:
-        st.error("配置获取失败，请重新配置")
-        if st.button("重新配置"):
-            reset_user_config()
-            st.rerun()
-        return
+        <div class="bg-gray-50 border border-gray-200 rounded-lg p-5 mb-6">
+            <h3 class="text-gray-800 font-semibold mb-4 flex items-center gap-2 text-sm">
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-600"></span> Content Verification
+            </h3>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="bg-white border border-gray-200 rounded-lg overflow-hidden h-full">
+                    <div class="bg-green-50 text-green-700 text-xs font-bold px-3 py-2 flex items-center gap-1.5 border-b border-green-200">
+                        <span>✅</span> Objective Facts
+                    </div>
+                    <div class="p-4 text-sm text-gray-700 leading-relaxed">
+                        <p class="mb-2">Excerpt: "员工已被警方拘留"</p>
+                        <p class="text-gray-600">Verification: Confirmed. Police report issued today (10/26). <a href="#" class="text-[#2A8BF5] hover:underline">Link to source</a></p>
+                    </div>
+                </div>
+                
+                <div class="bg-white border border-gray-200 rounded-lg overflow-hidden h-full">
+                    <div class="bg-red-50 text-red-700 text-xs font-bold px-3 py-2 flex items-center gap-1.5 border-b border-red-200">
+                        <span>🚨</span> Misleading / Exaggerated
+                    </div>
+                    <div class="p-4 text-sm text-gray-700 leading-relaxed">
+                        <p class="mb-2">Excerpt: "携款潜逃"</p>
+                        <p class="text-gray-600">Verification: Disproven. Source 1 (financial report) shows attendance at meeting. <a href="#" class="text-[#2A8BF5] hover:underline">Link to source</a></p>
+                    </div>
+                </div>
+            </div>
 
-    # 页面 Header 
+            <div class="bg-white border border-gray-200 rounded-lg overflow-hidden mt-4">
+                <div class="bg-blue-50 text-blue-700 text-xs font-bold px-3 py-2 flex items-center gap-1.5 border-b border-blue-200">
+                    <span>💬</span> Subjective Opinion
+                </div>
+                <div class="p-4 text-sm text-gray-700 leading-relaxed flex flex-col md:flex-row md:gap-8">
+                    <p>Excerpt: "建议避雷"</p>
+                    <p class="text-gray-600">Verification: Subjective judgment, non-verifiable.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-gray-50 border border-gray-200 rounded-lg p-5 mb-6">
+            <h3 class="text-gray-800 font-semibold mb-5 flex items-center gap-2 text-sm">
+                <span class="w-1.5 h-1.5 rounded-full bg-[#2A8BF5]"></span> Propagation Timeline
+            </h3>
+            
+            <div class="relative border-l border-gray-300 ml-2 pl-6 py-1 space-y-6">
+                <div class="relative">
+                    <div class="absolute w-2 h-2 bg-[#2A8BF5] rounded-full -left-[28.5px] top-1.5 shadow-[0_0_8px_rgba(42,139,245,0.8)]"></div>
+                    <div class="text-xs text-gray-600 mb-1">2023年10月24日 14:30 | Source: 小红书/Anonymous</div>
+                    <div class="text-sm text-gray-700">Initial leak: Anonymous leak with single screenshot.</div>
+                </div>
+                <div class="relative">
+                    <div class="absolute w-2 h-2 bg-gray-400 rounded-full -left-[28.5px] top-1.5"></div>
+                    <div class="text-xs text-gray-600 mb-1">2023年10月25日 09:15 | Source: 微博/Marketing</div>
+                    <div class="text-sm text-gray-700">Source: 微博/Marketing: Re-shared with emotional context.</div>
+                </div>
+                <div class="relative">
+                    <div class="absolute w-2 h-2 bg-gray-400 rounded-full -left-[28.5px] top-1.5"></div>
+                    <div class="text-xs text-gray-600 mb-1">2023年10月26日 18:00 | Source: 官方/Media</div>
+                    <div class="text-sm text-gray-700">Source: Police and Media: Official police and media clarification.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
+components.html(report_html_full, height=1000, scrolling=False)
+
+# 4.4 原始证据面板 (原生 st.expander)
+with st.expander("🔗 Raw Evidence"):
     st.markdown("""
-    <div class="text-center mb-8">
-        <h1 class="text-4xl font-extrabold text-gray-900 tracking-tight">🕵️‍♂️ “较真”的新闻观察员</h1>
-        <p class="text-gray-500 mt-2 text-lg">输入一条新闻链接或一段引战言论，AI 多智能体将为您追溯传播源头并核查事实真相。</p>
+    <div class="text-sm text-gray-600 leading-loose">
+        1. 东方财富网 (Conference call)<br>
+        2. 平安朝阳 (Police Report)<br>
+        3. 澎湃新闻
     </div>
     """, unsafe_allow_html=True)
 
-    # 输入区域
-    with st.container():
-        user_input = st.text_area("📰 待核查的新闻内容或 URL", height=120, placeholder="例如：某博主爆料A公司即将裁员80%... 或直接粘贴网页链接")
-        start_btn = st.button("🚀 启动深度核查 (Start Verification)", type="primary", use_container_width=True)
 
-    if start_btn and user_input:
-        api_base = config_params["api_base"]
-        chat_model = config_params["chat_model"]
-        embedding_model = config_params["embedding_model"]
-        search_provider = config_params["search_provider"]
-        selected_language = config_params["selected_language"]
-        provider_config = config_params["provider_config"]
-        
-        if not api_base or not chat_model or not embedding_model:
-            st.error("配置信息不完整，请重新配置")
-            st.stop()
-
-        embedding_api_key = provider_config.get("api_key", "lm-studio")
-        search_config = model_manager.get_search_provider_config(search_provider)
-        searxng_url = search_config.get("base_url", "http://localhost:8090")
-
-        fact_checker = FactChecker(
-            api_base=api_base, model=chat_model, temperature=temperature, max_tokens=1000,
-            embedding_base_url=api_base, embedding_model=embedding_model, embedding_api_key=embedding_api_key,
-            search_engine=search_provider, searxng_url=searxng_url, output_language=selected_language,
-            search_config=search_config,
-        )
-
-        # 模拟 AI Agent 思考流
-        with st.status("🕵️‍♂️ 侦探 Agent 正在工作中...", expanded=True) as status:
-            st.write("🔍 提取核心实体与事件关键词...")
-            claim = fact_checker.extract_claim(user_input)
-            if "claim:" in claim.lower(): claim = claim.split("claim:")[-1].strip()
-            time.sleep(0.5)
-
-            st.write("🌐 联网检索：追踪全网相关报道...")
-            search_max_results = search_config.get("max_results", 5)
-            evidence_docs = fact_checker.search_evidence(claim, search_max_results)
-            time.sleep(0.5)
-
-            st.write("🧠 分析证据：提取高相关性上下文...")
-            base_results = search_config.get("max_results", 5)
-            max_evidence_display = int(base_results * 3 * model_manager.get_current_config().get("defaults", {}).get("evidence_display_multiplier", 2.0))
-            evidence_chunks = fact_checker.get_evidence_chunks(evidence_docs, claim, top_k=max_evidence_display)
-            evaluation_evidence = evidence_chunks[:-1] if len(evidence_chunks) > 1 else evidence_chunks
-
-            st.write("⚖️ 交叉比对：多维度核查与溯源还原...")
-            # 注意：这里我们传入了 original_text 以支持前几轮设定的复杂 Prompt
-            evaluation = fact_checker.evaluate_claim(claim, evaluation_evidence, original_text=user_input)
-            
-            status.update(label="✅ 核查完成！生成分析报告", state="complete", expanded=False)
-
-        st.markdown("<hr class='my-6 border-gray-200'>", unsafe_allow_html=True)
-
-        # ---------------- 解析 LLM 的 Markdown ----------------
-        reasoning = evaluation.get('reasoning', '')
-        
-        # 使用正则拆分大模块
-        content_match = re.search(r'### 📊 内容核查.*?\n(.*?)(?=### 🔄|### ⚖️|$)', reasoning, re.DOTALL)
-        timeline_match = re.search(r'### 🔄 事件溯源.*?\n(.*?)(?=### 📊|### ⚖️|$)', reasoning, re.DOTALL)
-        
-        content_text = content_match.group(1).strip() if content_match else ""
-        timeline_text = timeline_match.group(1).strip() if timeline_match else "暂无明确的溯源证据。"
-
-        # 解析小模块 (事实、观点、谬误)
-        fact_match = re.search(r'- \*\*客观事实\*\*[：:]\s*(.*?)(?=- \*\*|- 疑似|###|$)', content_text, re.DOTALL)
-        opinion_match = re.search(r'- \*\*主观观点\*\*[：:]\s*(.*?)(?=- \*\*|- 疑似|###|$)', content_text, re.DOTALL)
-        error_match = re.search(r'- \*\*疑似错误/不实\*\*[：:]\s*(.*?)(?=- \*\*|###|$)', content_text, re.DOTALL)
-
-        # ---------------- 渲染动态 UI ----------------
-        # 结论区域
-        verdict = evaluation["verdict"].upper()
-        verdict_cn, emoji, bg_color, text_color = "无法验证", "❓", "bg-gray-100", "text-gray-800"
-        if verdict == "TRUE": verdict_cn, emoji, bg_color, text_color = "正确", "✅", "bg-green-100", "text-green-800"
-        elif verdict == "FALSE": verdict_cn, emoji, bg_color, text_color = "错误", "❌", "bg-red-100", "text-red-800"
-        elif verdict == "PARTIALLY TRUE": verdict_cn, emoji, bg_color, text_color = "部分正确", "⚠️", "bg-yellow-100", "text-yellow-800"
-
-        st.markdown(f"""
-        <div class="mb-6 flex items-center justify-center p-4 {bg_color} rounded-lg border">
-            <h2 class="text-2xl font-bold {text_color} m-0 flex items-center gap-2">
-                <span>{emoji}</span> 最终综合判定: {verdict_cn}
-            </h2>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # 双栏内容
-        left_col, right_col = st.columns([1, 1], gap="large")
-
-        with left_col:
-            st.markdown("<h2 class='text-2xl font-bold text-gray-800 border-l-4 border-blue-500 pl-3 mb-6'>📈 传播路径还原</h2>", unsafe_allow_html=True)
-            # 渲染时间线 UI 卡片
-            st.markdown(f"""
-            <div class="relative border-l-2 border-blue-200 ml-4 pl-4 py-2">
-                <div class="absolute w-4 h-4 bg-blue-500 rounded-full -left-[9px] top-4 ring-4 ring-white"></div>
-                <div class="bg-gray-50 p-5 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition text-sm text-gray-700 leading-relaxed">
-                    {markdown_to_html(timeline_text)}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with right_col:
-            st.markdown("<h2 class='text-2xl font-bold text-gray-800 border-l-4 border-emerald-500 pl-3 mb-6'>🔬 文本内容拆解</h2>", unsafe_allow_html=True)
-            
-            # 渲染事实卡片
-            if fact_match and fact_match.group(1).strip():
-                st.markdown(f"""
-                <div class="p-4 mb-4 rounded-xl bg-green-50 border border-green-200 shadow-sm hover:shadow-md transition">
-                    <span class="font-bold bg-green-100 text-green-700 px-2 py-1 rounded text-xs tracking-wider">✅ 客观事实 (True)</span>
-                    <div class="mt-3 text-sm text-gray-800 leading-relaxed">{markdown_to_html(fact_match.group(1).strip())}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-            # 渲染观点卡片
-            if opinion_match and opinion_match.group(1).strip():
-                st.markdown(f"""
-                <div class="p-4 mb-4 rounded-xl bg-blue-50 border border-blue-200 shadow-sm hover:shadow-md transition">
-                    <span class="font-bold bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs tracking-wider">💬 主观观点 (Opinion)</span>
-                    <div class="mt-3 text-sm text-gray-800 leading-relaxed">{markdown_to_html(opinion_match.group(1).strip())}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-            # 渲染谬误卡片
-            if error_match and error_match.group(1).strip():
-                st.markdown(f"""
-                <div class="p-4 mb-4 rounded-xl bg-red-50 border border-red-200 shadow-sm hover:shadow-md transition">
-                    <span class="font-bold bg-red-100 text-red-700 px-2 py-1 rounded text-xs tracking-wider">🚨 疑似不实/错误 (Fake)</span>
-                    <div class="mt-3 text-sm text-gray-800 leading-relaxed">{markdown_to_html(error_match.group(1).strip())}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            # 如果没匹配到项目符号（兜底机制）
-            if not (fact_match or opinion_match or error_match):
-                st.markdown(f"""
-                <div class="p-4 rounded-xl bg-gray-50 border border-gray-200 shadow-sm text-sm text-gray-800">
-                    {markdown_to_html(content_text)}
-                </div>
-                """, unsafe_allow_html=True)
-
-        st.markdown("---")
-        with st.expander("🔗 查看详细检索证据来源 (Raw Evidence)"):
-            evidence_md = ""
-            for j, chunk in enumerate(evaluation_evidence):
-                evidence_md += f"**[{j+1}] 来源：{chunk['source']}**\n\n> {chunk['text']}\n\n---\n"
-            st.markdown(evidence_md)
-
-        # 保存到数据库
-        db_utils.save_fact_check(
-            st.session_state.user_id, user_input, claim, verdict, evaluation["reasoning"], evaluation_evidence
-        )
-def show_history_page():
-    """显示历史记录页面"""
-    st.header("历史记录")
-    st.write("以下是您过去进行的事实核查记录")
-
-    # 分页控制
-    items_per_page = 5
-    total_items = db_utils.count_user_history(st.session_state.user_id)
-
-    if "history_page" not in st.session_state:
-        st.session_state.history_page = 0
-
-    total_pages = (total_items + items_per_page - 1) // items_per_page
-
-    if total_pages > 1:
-        col1, col2, col3 = st.columns([1, 3, 1])
-        with col1:
-            if st.button("上一页", disabled=(st.session_state.history_page == 0)):
-                st.session_state.history_page -= 1
-                st.rerun()
-        with col2:
-            st.write(f"第 {st.session_state.history_page + 1} 页，共 {total_pages} 页")
-        with col3:
-            if st.button(
-                "下一页",
-                disabled=(
-                    st.session_state.history_page == total_pages - 1 or total_pages == 0
-                ),
-            ):
-                st.session_state.history_page += 1
-                st.rerun()
-
-    # 获取用户历史记录
-    history_items = db_utils.get_user_history(
-        st.session_state.user_id,
-        limit=items_per_page,
-        offset=st.session_state.history_page * items_per_page,
-    )
-
-    if not history_items:
-        st.info("您还没有任何历史记录")
-        return
-
-    # 显示历史记录
-    for item in history_items:
-        with st.container():
-            cols = st.columns([4, 1, 1])
-            with cols[0]:
-                st.subheader(
-                    f"{item['claim'][:100]}..."
-                    if len(item["claim"]) > 100
-                    else item["claim"]
-                )
-
-                # 添加判断结果和时间
-                verdict = item["verdict"].upper()
-                if verdict == "TRUE":
-                    emoji = "✅"
-                    verdict_cn = "正确"
-                elif verdict == "FALSE":
-                    emoji = "❌"
-                    verdict_cn = "错误"
-                elif verdict == "PARTIALLY TRUE":
-                    emoji = "⚠️"
-                    verdict_cn = "部分正确"
-                else:
-                    emoji = "❓"
-                    verdict_cn = "无法验证"
-
-                st.write(f"结论: {emoji} {verdict_cn}")
-                st.write(f"时间: {item['created_at']}")
-
-            with cols[1]:
-                if st.button("查看详情", key=f"view_{item['id']}"):
-                    st.session_state.current_history_id = item["id"]
-                    st.session_state.page = "details"
-                    st.rerun()
-
-            st.divider()
-
-
-def show_history_detail_page():
-    """显示历史记录详情页面"""
-    if st.session_state.current_history_id is None:
-        st.error("未找到历史记录")
-        if st.button("返回历史列表"):
-            st.session_state.page = "history"
-            st.rerun()
-        return
-
-    # 获取历史记录详情
-    history_item = db_utils.get_history_by_id(st.session_state.current_history_id)
-
-    if not history_item:
-        st.error("未找到历史记录")
-        if st.button("返回历史列表"):
-            st.session_state.page = "history"
-            st.rerun()
-        return
-
-    # 显示返回按钮
-    if st.button("返回历史列表"):
-        st.session_state.page = "history"
-        st.rerun()
-
-    # 显示历史记录详情
-    st.header("核查详情")
-
-    st.subheader("原始文本")
-    st.write(history_item["original_text"])
-
-    st.subheader("🔍 提取的核心声明")
-    st.write(history_item["claim"])
-
-    # 显示证据
-    st.subheader("🔗 证据来源")
-    for j, chunk in enumerate(history_item["evidence"]):
-        st.markdown(f"**[{j+1}]:**")
-        st.markdown(f"{chunk['text']}")
-        st.markdown(f"来源: {chunk['source']}")
-        if "similarity" in chunk and chunk["similarity"] is not None:
-            st.markdown(f"相关性: {chunk['similarity']:.2f}")
-        st.markdown("---")
-
-    # 显示判断结果
-    verdict = history_item["verdict"].upper()
-    if verdict == "TRUE":
-        emoji = "✅"
-        verdict_cn = "正确"
-    elif verdict == "FALSE":
-        emoji = "❌"
-        verdict_cn = "错误"
-    elif verdict == "PARTIALLY TRUE":
-        emoji = "⚠️"
-        verdict_cn = "部分正确"
-    else:
-        emoji = "❓"
-        verdict_cn = "无法验证"
-
-    st.subheader(f"{emoji} 结论: {verdict_cn}")
-
-    st.subheader("推理过程")
-    st.write(history_item["reasoning"])
-
-    # 显示导出选项
-    st.divider()
-    st.subheader("导出报告")
-
-    # 创建PDF导出按钮
-    try:
-        pdf_data = generate_fact_check_pdf(history_item)
-
-        # 生成文件名
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"事实核查报告_{current_time}.pdf"
-
-        # 使用HTML强制下载
-        pdf_b64 = base64.b64encode(pdf_data).decode()
-        href = f"""
-        <a href="data:application/pdf;base64,{pdf_b64}" 
-        download="{filename}" 
-        target="_blank"
-        style="display: inline-block; padding: 0.25em 0.5em; 
-        background-color: #4CAF50; color: white; 
-        text-decoration: none; border-radius: 4px;">
-        导出为PDF
-        </a>
-        """
-        st.markdown(href, unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"PDF生成错误: {str(e)}")
-        st.info("请确保已安装ReportLab库: pip install reportlab")
-
-
-# 全局状态初始化
-if "page" not in st.session_state:
-    st.session_state.page = "home"  # 可能的值: 'home', 'history', 'details'
-
-if "current_history_id" not in st.session_state:
-    st.session_state.current_history_id = None
-
-# 早期检查持久登录状态 - 在任何UI显示之前
-if "user_id" not in st.session_state or st.session_state.user_id is None:
-    saved_login = auth.check_saved_login()
-    if saved_login:
-        st.session_state.user_id = saved_login["user_id"]
-        st.session_state.username = saved_login["username"]
-        st.session_state.persisted_login = saved_login
-
-# 检查是否已登录，否则显示登录界面
-is_authenticated = auth.show_auth_ui()
-
-if is_authenticated:
-    # 用户已登录，检查是否需要配置
-    
-    # 检查用户配置状态
-    if not check_user_config_status():
-        # 显示配置向导
-        show_initial_config_wizard()
-    else:
-        # 配置完成，显示主应用程序
-        # 显示顶部导航栏
-        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-        with col1:
-            st.title("AI虚假新闻检测器")
-        with col2:
-            if st.button("首页", use_container_width=True):
-                st.session_state.page = "home"
-                st.rerun()
-        with col3:
-            if st.button("历史记录", use_container_width=True):
-                st.session_state.page = "history"
-                st.rerun()
-        with col4:
-            if st.button("登出", use_container_width=True):
-                auth.logout()
-                st.rerun()
-
-        # 显示当前用户信息
-        st.write(f"已登录用户: {st.session_state.username}")
-
-        # 根据当前页面显示不同的内容
-        if st.session_state.page == "home":
-            # 主页 - 使用简化的事实核查界面
-            show_simplified_fact_check_page()
-        elif st.session_state.page == "history":
-            # 历史记录页面
-            show_history_page()
-        elif st.session_state.page == "details":
-            # 历史详情页面
-            show_history_detail_page()
+# ==========================================
+# 5. 底部悬浮输入框 (原生 st.chat_input)
+# ==========================================
+st.chat_input("Type a message...", key="mock_input")
