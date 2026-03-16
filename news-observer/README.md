@@ -16,9 +16,10 @@
 - **本地化界面**：完整的中英文界面支持
 
 ### 🤖 多模型提供商支持
-- **Ollama**：本地部署模型（默认：GPT-OSS 120B Cloud + Nomic Embed）
+- **Ollama**：本地部署模型（默认：llama3.1 + nomic-embed-text）
 - **LM Studio**：本地模型服务
 - **OpenAI**：官方 GPT 系列模型
+- **阿里云通义千问**：☁️ 阿里云官方通义系列模型
 - **自定义API**：兼容 OpenAI 格式的任意模型服务
 
 ### 🔍 高精度事实核查
@@ -39,14 +40,13 @@
 
 - **Python 3.14+**
 - **Ollama** 本地或其他兼容 OpenAI API 的模型服务
-- **SearXNG** (可选，用于搜索功能)
 
 ### 安装步骤
 
 1. **克隆仓库**
 ```bash
 git clone https://github.com/ahardworkingant/detectFakeNews.git
-cd fake-news-detector-main
+cd news-observer
 ```
 
 2. **安装依赖**
@@ -102,8 +102,8 @@ fake-news-detector/
       "type": "openai_compatible",
       "base_url": "http://localhost:11434/v1",
       "models": {
-        "gpt-oss:120b-cloud": {
-          "name": "GPT-OSS 120B Cloud",
+        "llama3.1": {
+          "name": "llama3.1:latest",
           "type": "chat",
           "max_tokens": 8192
         },
@@ -113,11 +113,48 @@ fake-news-detector/
           "dimensions": 768
         }
       }
-    }
+    },
+    "aliyun": {
+      "name": "阿里云 (DashScope)",
+      "type": "openai_compatible",
+      "base_url": "https://dashscope.aliyuncs.com/api/v1",
+      "api_key": "",
+      "models": {
+        "qwen3-max": {
+          "name": "qwen3-max",
+          "type": "chat",
+          "max_tokens": 262144,
+          "supports_streaming": true
+        },
+        "qwen-max": {
+          "name": "Qwen Max (云端旗舰)",
+          "type": "chat",
+          "max_tokens": 8192,
+          "supports_streaming": true
+        },
+        "qwen-turbo": {
+          "name": "Qwen Turbo (云端极速)",
+          "type": "chat",
+          "max_tokens": 8192,
+          "supports_streaming": true
+        },
+        "qwen-plus": {
+          "name": "Qwen Plus (云端)",
+          "max_tokens": 8192,
+          "supports_streaming": true
+        },
+        "text-embedding-v3": {
+          "name": "Qwen Embedding v3",
+          "type": "embedding",
+          "max_tokens": 8192,
+          "dimensions": 1024
+        }
+      }
+    },
   },
   "defaults": {
     "llm_provider": "ollama",
-    "llm_model": "gpt-oss:120b-cloud",
+    "llm_model": "llama3.1:latest",
     "embedding_provider": "ollama",
     "embedding_model": "nomic-embed-text:latest",
     "output_language": "zh"
@@ -128,8 +165,8 @@ fake-news-detector/
 ### 搜索引擎配置
 
 支持多种搜索引擎，可在配置文件中设置：
-- **SearXNG**: 本地部署的隐私搜索引擎
-- **DuckDuckGo**: 在线搜索（支持代理配置）
+- **DuckDuckGo**: 在线搜索（Bing）
+- **Bocha**: API搜索引擎
 
 ## 🔄 工作流程
 
@@ -144,29 +181,4 @@ fake-news-detector/
 - **自动检测**: 根据输入文本自动选择合适的语言模板
 - **手动选择**: 用户可指定输出语言（中/英/日/韩）
 - **智能切换**: 基于 Unicode 字符模式的语言识别
-
-## 📖 使用说明
-
-### Web 界面使用
-
-1. 选择模型提供商和具体模型
-2. 配置搜索引擎和输出语言
-3. 输入需要核查的新闻内容
-4. 查看实时处理进度和最终结果
-5. 导出 PDF 报告或查看历史记录
-
-
-## 🛠️ 开发指南
-
-### 环境设置
-
-```bash
-# 开发环境安装
-pip install -r requirements.txt
-
-# 运行测试
-python -m pytest test/
-
-# 启动开发服务器
-streamlit run app.py --server.runOnSave true
 ```
