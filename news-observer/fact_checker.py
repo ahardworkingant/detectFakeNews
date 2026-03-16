@@ -246,7 +246,7 @@ class FactChecker:
                     translations[target_lang] = translated_text
 
             except Exception as e:
-                st.warning(f"Translation to {target_lang} failed: {str(e)}")
+                print(f"Translation to {target_lang} failed: {str(e)}")
                 continue
 
         return translations
@@ -337,7 +337,8 @@ class FactChecker:
             )
             return np.array(response.data[0].embedding)
         except Exception as e:
-            st.error(f"Error getting single embedding: {str(e)}")
+            print(f"Error getting single embedding: {str(e)}")
+            raise ConnectionError("向量模型(Embedding)连接失败，请检查服务是否启动。")
             return np.array([])
 
     def _get_embeddings(self, texts: list) -> np.ndarray:
@@ -367,9 +368,8 @@ class FactChecker:
                 
             return np.array(all_embeddings)
         except Exception as e:
-            st.error(f"Error getting embeddings: {str(e)}")
-            st.info(f"Embedding API URL: {self.embedding_base_url}")
-            st.info(f"Embedding Model: {self.embedding_model_name}")
+            print(f"Error getting embeddings: {str(e)}")
+            raise ConnectionError("向量模型批量处理失败，服务可能已断开。")
             return np.array([])
     def extract_claim(self, text: str) -> str:
         """
@@ -425,8 +425,8 @@ class FactChecker:
                 return claims_text.strip() if claims_text.strip() else text
 
         except Exception as e:
-            st.error(f"Error extracting claims: {str(e)}")
-            return text  # Return original text as fallback
+            print(f"Error extracting claims: {str(e)}")
+            raise ConnectionError(f"大模型连接失败 (提取声明): {str(e)}")
 
     def search_evidence(self, claim: str, num_results: int = 5) -> List[Dict[str, str]]:
         """
@@ -490,7 +490,7 @@ class FactChecker:
 
             except Exception as e:
                 with search_progress.container():
-                    st.warning(f"⚠️ {lang_code} 搜索失败: {str(e)}")
+                    print(f"DuckDuckGo search failed: {str(e)}")
                 continue
 
         # Remove duplicates based on URL
@@ -908,7 +908,9 @@ class FactChecker:
             return {"verdict": verdict, "reasoning": reasoning}
 
         except Exception as e:
-            st.error(f"Error evaluating claim: {str(e)}")
+            # 删掉这行: st.error(f"Error evaluating claim: {str(e)}")
+            print(f"Error evaluating claim: {str(e)}")
+            raise ConnectionError(f"大模型连接失败 (综合评估): {str(e)}")
             return {
                 "verdict": "ERROR",
                 "reasoning": f"An error occurred during evaluation: {str(e)}",

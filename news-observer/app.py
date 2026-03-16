@@ -134,12 +134,7 @@ def show_initial_config_wizard():
                 )
             
             elif search_provider == "bocha":
-                bocha_api_key = st.text_input(
-                    "🔑 Bocha API Key",
-                    type="password",
-                    help="请输入您的 Bocha API 密钥",
-                    placeholder="sk-..."
-                )
+                bocha_api_key  = "sk-1dab5ab6d0984737ac453df5258ebbc0"
                 if searxng_url:
                     # 测试 SearXNG 连接
                     searxng_available = test_searxng_connection(searxng_url)
@@ -224,12 +219,7 @@ def show_initial_config_wizard():
                     )
 
                 elif search_provider == "bocha":
-                    bocha_api_key = st.text_input(
-                        "🔑 Bocha API Key",
-                        type="password",
-                        help="请输入您的 Bocha API 密钥",
-                        placeholder="sk-..."
-                    )
+                    bocha_api_key  = "sk-1dab5ab6d0984737ac453df5258ebbc0"
                 manual_config = {
                     "name": "Ollama",
                     "provider": "ollama",
@@ -285,12 +275,7 @@ def show_initial_config_wizard():
                     )
                 # 新增 Bocha 的输入框
                 elif search_provider == "bocha":
-                    bocha_api_key = st.text_input(
-                        "🔑 Bocha API Key",
-                        type="password",
-                        help="请输入您的 Bocha API 密钥",
-                        placeholder="sk-..."
-                    )
+                    bocha_api_key  = "sk-1dab5ab6d0984737ac453df5258ebbc0"
                 
                 manual_config = {
                     "name": "LM Studio", 
@@ -351,12 +336,7 @@ def show_initial_config_wizard():
                 )
             # 新增 Bocha 的输入框
             elif search_provider == "bocha":
-                bocha_api_key = st.text_input(
-                    "🔑 Bocha API Key",
-                    type="password",
-                    help="请输入您的 Bocha API 密钥",
-                    placeholder="sk-..."
-                )
+                bocha_api_key  = "sk-1dab5ab6d0984737ac453df5258ebbc0"
             
             manual_config = {
                 "name": "OpenAI",
@@ -374,7 +354,7 @@ def show_initial_config_wizard():
     elif "☁️ 阿里云" in config_option:
         st.subheader("☁️ 阿里云通义千问 配置")
         st.info("💡 请前往阿里云百炼平台 (DashScope) 获取 API Key。云端千问推理速度远快于本地模型。")
-        api_key = st.text_input("🔑 DashScope API Key", type="password", help="请输入您的阿里云 API 密钥 (以 sk- 开头)")
+        api_key = "sk-e7c495ec520b4e089d274ee996e0d476"
         
         if api_key:
             # 预定义千问模型
@@ -417,12 +397,7 @@ def show_initial_config_wizard():
                 )
             # 新增 Bocha 的输入框
             elif search_provider == "bocha":
-                bocha_api_key = st.text_input(
-                    "🔑 Bocha API Key",
-                    type="password",
-                    help="请输入您的 Bocha API 密钥",
-                    placeholder="sk-..."
-                )
+                bocha_api_key  = "sk-1dab5ab6d0984737ac453df5258ebbc0"
             
             manual_config = {
                 "name": "阿里云",
@@ -484,12 +459,7 @@ def show_initial_config_wizard():
                                 key="custom_searxng_url_1"
                             )
                         elif search_provider == "bocha":
-                            bocha_api_key = st.text_input(
-                                "🔑 Bocha API Key",
-                                type="password",
-                                help="请输入您的 Bocha API 密钥",
-                                placeholder="sk-..."
-                            )
+                            bocha_api_key  = "sk-1dab5ab6d0984737ac453df5258ebbc0"
                         
                         manual_config = {
                             "name": "自定义配置",
@@ -541,12 +511,7 @@ def show_initial_config_wizard():
                                 key="custom_searxng_url_2"
                             )
                         elif search_provider == "bocha":
-                            bocha_api_key = st.text_input(
-                                "🔑 Bocha API Key",
-                                type="password",
-                                help="请输入您的 Bocha API 密钥",
-                                placeholder="sk-..."
-                            )
+                            bocha_api_key  = "sk-1dab5ab6d0984737ac453df5258ebbc0"
 
                         
                         manual_config = {
@@ -1060,6 +1025,10 @@ def show_simplified_fact_check_page():
         # 使用侧边栏的设置覆盖默认值
         max_tokens = 1000  # 固定值，简化配置
 
+        
+        # ==========================================
+        # 引入降级策略：使用 try...except 包裹容易失败的网络/模型请求
+        # ==========================================
         # 初始化FactChecker
         fact_checker = FactChecker(
             api_base=api_base,
@@ -1074,157 +1043,200 @@ def show_simplified_fact_check_page():
             output_language=selected_language,
             search_config=search_config,
         )
+        try:
+            
+            # 第1步：提取声明
+            claim_placeholder.markdown("### 🔍 正在提取新闻的核心声明...")
+            claim = fact_checker.extract_claim(user_input)
 
-        # 第1步：提取声明
-        claim_placeholder.markdown("### 🔍 正在提取新闻的核心声明...")
-        claim = fact_checker.extract_claim(user_input)
-        # 处理claim字符串，提取"claim:"后面的内容
-        if "claim:" in claim.lower():
-            claim = claim.split("claim:")[-1].strip()
-        claim_placeholder.markdown(f"### 🔍 提取新闻的核心声明\n\n{claim}")
 
-        # 第2步：搜索证据
-        evidence_placeholder.markdown("### 🌐 正在搜索相关证据...")
-        # 从配置中获取搜索结果数量
-        search_max_results = search_config.get("max_results", 5)
-        evidence_docs = fact_checker.search_evidence(claim, search_max_results)
+            # 处理claim字符串，提取"claim:"后面的内容
+            if "claim:" in claim.lower():
+                claim = claim.split("claim:")[-1].strip()
+            claim_placeholder.markdown(f"### 🔍 提取新闻的核心声明\n\n{claim}")
 
-        # 第3步：获取相关证据块
-        evidence_placeholder.markdown("### 🌐 正在分析证据相关性...")
-        # 动态计算展示的证据数量：基于搜索配置 * 语言数量 * 扩展倍数
-        base_results = search_config.get("max_results", 5)
-        language_count = 3  # 中英日三种语言
-        expansion_factor = (
-            model_manager.get_current_config()
-            .get("defaults", {})
-            .get("evidence_display_multiplier", 2.0)
-        )
-        max_evidence_display = int(base_results * language_count * expansion_factor)
+            # 第2步：搜索证据
+            evidence_placeholder.markdown("### 🌐 正在搜索相关证据...")
+            # 从配置中获取搜索结果数量
+            search_max_results = search_config.get("max_results", 5)
+            evidence_docs = fact_checker.search_evidence(claim, search_max_results)
 
-        max_ev = 5 # 强制限制最大证据数量，而不是由搜索结果基数翻倍
-        evidence_chunks = fact_checker.get_evidence_chunks(
-            evidence_docs, claim, top_k=max_evidence_display
-        )
+            # 第3步：获取相关证据块
+            evidence_placeholder.markdown("### 🌐 正在分析证据相关性...")
+            # 动态计算展示的证据数量：基于搜索配置 * 语言数量 * 扩展倍数
+            base_results = search_config.get("max_results", 5)
+            language_count = 3  # 中英日三种语言
+            expansion_factor = (
+                model_manager.get_current_config()
+                .get("defaults", {})
+                .get("evidence_display_multiplier", 2.0)
+            )
+            max_evidence_display = int(base_results * language_count * expansion_factor)
 
-        # 显示证据结果
-        evidence_md = "### 🔗 证据来源\n\n"
-        # 使用相同的证据块进行显示和评估
-        evaluation_evidence = (
-            evidence_chunks[:-1] if len(evidence_chunks) > 1 else evidence_chunks
-        )
+            max_ev = 5 # 强制限制最大证据数量，而不是由搜索结果基数翻倍
+            evidence_chunks = fact_checker.get_evidence_chunks(
+                evidence_docs, claim, top_k=max_evidence_display
+            )
+            # 【新增拦截】：如果证据块因为 Embedding 失败而返回空或报错格式
+            if not evidence_chunks:
+                raise Exception("向量模型 (Embedding) 服务异常，无法计算相关性。")
 
-        for j, chunk in enumerate(evaluation_evidence):
-            evidence_md += f"**[{j+1}]:**\n"
-            evidence_md += f"{chunk['text']}\n"
-            evidence_md += f"来源: {chunk['source']}\n\n"
 
-        evidence_placeholder.markdown(evidence_md)
+            # 显示证据结果
+            evidence_md = "### 🔗 证据来源\n\n"
+            # 使用相同的证据块进行显示和评估
+            evaluation_evidence = (
+                evidence_chunks[:-1] if len(evidence_chunks) > 1 else evidence_chunks
+            )
 
-        # 第4步：评估声明
-        verdict_placeholder.markdown("### ⚖️ 正在进行事件溯源与多维度核查...")
-        
-        # 传入 user_input 以便 LLM 获取原始文本进行事实/观点拆解
-        evaluation = fact_checker.evaluate_claim(claim, evaluation_evidence, original_text=user_input)
+            for j, chunk in enumerate(evaluation_evidence):
+                # 防御性编程：防止底层报错缺少字段
+                similarity = chunk.get('similarity', 0)
+                evidence_md += f"**[{j+1}]:**\n"
+                evidence_md += f"{chunk['text']}\n"
+                evidence_md += f"来源: {chunk['source']}\n\n"
 
-        # 解析 reasoning
-        reasoning = evaluation.get('reasoning', '')
-        content_match = re.search(r'### 📊 内容核查.*?\n(.*?)(?=### 🔄|### ⚖️|$)', reasoning, re.DOTALL)
-        timeline_match = re.search(r'### 🔄 事件溯源.*?\n(.*?)(?=### 📊|### ⚖️|$)', reasoning, re.DOTALL)
-        summary_match = re.search(r'总结[：:]\s*(.*)', reasoning)
+            evidence_placeholder.markdown(evidence_md)
 
-        content_text = content_match.group(1).strip() if content_match else ""
-        timeline_text = timeline_match.group(1).strip() if timeline_match else "暂无明确溯源路径。"
-        summary_text = summary_match.group(1).strip() if summary_match else "基于多源交叉比对与信息溯源，得出结论。"
+            # 第4步：评估声明
+            verdict_placeholder.markdown("### ⚖️ 正在进行事件溯源与多维度核查...")
+            
+            # 传入 user_input 以便 LLM 获取原始文本进行事实/观点拆解
+            evaluation = fact_checker.evaluate_claim(claim, evaluation_evidence, original_text=user_input)
 
-        fact_match = re.search(r'- \*\*客观事实\*\*[：:]\s*(.*?)(?=- \*\*|- 疑似|###|$)', content_text, re.DOTALL)
-        opinion_match = re.search(r'- \*\*主观观点\*\*[：:]\s*(.*?)(?=- \*\*|- 疑似|###|$)', content_text, re.DOTALL)
-        error_match = re.search(r'- \*\*疑似错误/不实\*\*[：:]\s*(.*?)(?=- \*\*|###|$)', content_text, re.DOTALL)
+            # 【新增拦截】：检查最终评估结果
+            if "Error" in str(evaluation.get("verdict", "")) or "Error" in str(evaluation.get("reasoning", "")):
+                raise Exception("最终核查评估阶段模型请求失败。")
 
-        verdict = evaluation.get("verdict", "FALSE").upper()
-        verdict_cn_map = {"TRUE": "正确", "FALSE": "错误", "PARTIALLY TRUE": "部分正确"}
+            # 解析 reasoning
+            reasoning = evaluation.get('reasoning', '')
+            content_match = re.search(r'### 📊 内容核查.*?\n(.*?)(?=### 🔄|### ⚖️|$)', reasoning, re.DOTALL)
+            timeline_match = re.search(r'### 🔄 事件溯源.*?\n(.*?)(?=### 📊|### ⚖️|$)', reasoning, re.DOTALL)
+            summary_match = re.search(r'总结[：:]\s*(.*)', reasoning)
 
-        # 数据组装
-        verdict_data = {
-            "verdict": verdict,
-            "verdict_en": verdict.title(),
-            "verdict_cn": verdict_cn_map.get(verdict, "无法验证"),
-            "reasoning": markdown_to_html(summary_text)
-        }
+            content_text = content_match.group(1).strip() if content_match else ""
+            timeline_text = timeline_match.group(1).strip() if timeline_match else "暂无明确溯源路径。"
+            summary_text = summary_match.group(1).strip() if summary_match else "基于多源交叉比对与信息溯源，得出结论。"
 
-        content_verification = {}
-        if fact_match and fact_match.group(1).strip() and fact_match.group(1).strip() != "无":
-            content_verification["objective_facts"] = {
-                "excerpt": "已证实的客观事实", "verification": markdown_to_html(fact_match.group(1).strip()), "source_link": "#"
+            fact_match = re.search(r'- \*\*客观事实\*\*[：:]\s*(.*?)(?=- \*\*|- 疑似|###|$)', content_text, re.DOTALL)
+            opinion_match = re.search(r'- \*\*主观观点\*\*[：:]\s*(.*?)(?=- \*\*|- 疑似|###|$)', content_text, re.DOTALL)
+            error_match = re.search(r'- \*\*疑似错误/不实\*\*[：:]\s*(.*?)(?=- \*\*|###|$)', content_text, re.DOTALL)
+
+            verdict = evaluation.get("verdict", "FALSE").upper()
+            verdict_cn_map = {"TRUE": "正确", "FALSE": "错误", "PARTIALLY TRUE": "部分正确"}
+
+            # 数据组装
+            verdict_data = {
+                "verdict": verdict,
+                "verdict_en": verdict.title(),
+                "verdict_cn": verdict_cn_map.get(verdict, "无法验证"),
+                "reasoning": markdown_to_html(summary_text)
             }
-        if error_match and error_match.group(1).strip() and error_match.group(1).strip() != "无":
-            content_verification["misleading"] = {
-                "excerpt": "夸大或错误的信息", "verification": markdown_to_html(error_match.group(1).strip()), "source_link": "#"
-            }
-        if opinion_match and opinion_match.group(1).strip() and opinion_match.group(1).strip() != "无":
-            content_verification["subjective_opinion"] = {
-                "excerpt": "强烈主观情绪表达", "verification": markdown_to_html(opinion_match.group(1).strip())
-            }
-        propagation_timeline = []
-        lines = [line.strip() for line in timeline_text.split('\n') if line.strip()]
-        for line in lines:
-            clean_line = re.sub(r'^[-*]\s*', '', line)
-            propagation_timeline.append({"date": "AI 分析节点", "source": "综合网络证据", "description": markdown_to_html(clean_line)})
-        
-        if not propagation_timeline:
-                propagation_timeline.append({"date": "AI 分析节点", "source": "综合网络证据", "description": markdown_to_html(timeline_text)})
-        # 动态渲染卡片组件
-        inner_html = render_verification_report(verdict_data, content_verification, propagation_timeline)
-        verdict_placeholder.markdown(inner_html, unsafe_allow_html=True)
-        # 确定结论表情符号
-        verdict = evaluation["verdict"]
-        if verdict.upper() == "TRUE":
-            emoji = "✅"
-            verdict_cn = "正确"
-        elif verdict.upper() == "FALSE":
-            emoji = "❌"
-            verdict_cn = "错误"
-        elif verdict.upper() == "PARTIALLY TRUE":
-            emoji = "⚠️"
-            verdict_cn = "部分正确"
-        else:
-            emoji = "❓"
-            verdict_cn = "无法验证"
 
-        # 显示最终结论（直接渲染 LLM 输出的丰富多维度报告）
-        verdict_md = f"### {emoji} 最终判定: {verdict_cn}\n\n"
-        verdict_md += f"{evaluation['reasoning']}\n\n"
+            content_verification = {}
+            if fact_match and fact_match.group(1).strip() and fact_match.group(1).strip() != "无":
+                content_verification["objective_facts"] = {
+                    "excerpt": "已证实的客观事实", "verification": markdown_to_html(fact_match.group(1).strip()), "source_link": "#"
+                }
+            if error_match and error_match.group(1).strip() and error_match.group(1).strip() != "无":
+                content_verification["misleading"] = {
+                    "excerpt": "夸大或错误的信息", "verification": markdown_to_html(error_match.group(1).strip()), "source_link": "#"
+                }
+            if opinion_match and opinion_match.group(1).strip() and opinion_match.group(1).strip() != "无":
+                content_verification["subjective_opinion"] = {
+                    "excerpt": "强烈主观情绪表达", "verification": markdown_to_html(opinion_match.group(1).strip())
+                }
+            propagation_timeline = []
+            lines = [line.strip() for line in timeline_text.split('\n') if line.strip()]
+            for line in lines:
+                clean_line = re.sub(r'^[-*]\s*', '', line)
+                propagation_timeline.append({"date": "AI 分析节点", "source": "综合网络证据", "description": markdown_to_html(clean_line)})
+            
+            if not propagation_timeline:
+                    propagation_timeline.append({"date": "AI 分析节点", "source": "综合网络证据", "description": markdown_to_html(timeline_text)})
+            # 动态渲染卡片组件
+            inner_html = render_verification_report(verdict_data, content_verification, propagation_timeline)
+            verdict_placeholder.markdown(inner_html, unsafe_allow_html=True)
+            # 确定结论表情符号
+            verdict = evaluation["verdict"]
+            if verdict.upper() == "TRUE":
+                emoji = "✅"
+                verdict_cn = "正确"
+            elif verdict.upper() == "FALSE":
+                emoji = "❌"
+                verdict_cn = "错误"
+            elif verdict.upper() == "PARTIALLY TRUE":
+                emoji = "⚠️"
+                verdict_cn = "部分正确"
+            else:
+                emoji = "❓"
+                verdict_cn = "无法验证"
 
-        verdict_placeholder.markdown(verdict_md)
+            # 显示最终结论（直接渲染 LLM 输出的丰富多维度报告）
+            verdict_md = f"### {emoji} 最终判定: {verdict_cn}\n\n"
+            verdict_md += f"{evaluation['reasoning']}\n\n"
 
-        # 整合完整的响应内容用于保存到聊天历史
-        full_response = f"""
-### 🔍 提取新闻的核心声明
+            verdict_placeholder.markdown(verdict_md)
 
-{claim}
+            # 整合完整的响应内容用于保存到聊天历史
+            full_response = f"""
+    ### 🔍 提取新闻的核心声明
 
----
+    {claim}
 
-{evidence_md}
+    ---
 
----
+    {evidence_md}
 
-{verdict_md}
-"""
+    ---
 
-        # 添加助手响应到聊天历史
-        st.session_state.messages.append(
-            {"role": "assistant", "content": full_response}
-        )
+    {verdict_md}
+    """
 
-        # 保存到数据库
-        db_utils.save_fact_check(
-            st.session_state.user_id,
-            user_input,
-            claim,
-            verdict,
-            evaluation["reasoning"],
-            evaluation_evidence,
-        )
+            # 添加助手响应到聊天历史
+            st.session_state.messages.append(
+                {"role": "assistant", "content": full_response}
+            )
+
+            # 保存到数据库
+            db_utils.save_fact_check(
+                st.session_state.user_id,
+                user_input,
+                claim,
+                verdict,
+                evaluation["reasoning"],
+                evaluation_evidence,
+            )
+        except Exception as e:
+            # ==========================================
+            # 降级处理：清空加载提示，展示友好的静态错误页面或提示卡片
+            # ==========================================
+            claim_placeholder.empty()
+            evidence_placeholder.empty()
+            
+            # 渲染一个 Tailwind 风格的静态故障卡片
+            fallback_html = """
+            <div class="bg-[#2A1818] border border-red-900/60 p-5 rounded-lg shadow-sm">
+                <h2 class="text-[17px] font-bold text-red-500 m-0 flex items-center gap-2">
+                    <span>🔌</span> 系统暂时无法连接到 AI 模型
+                </h2>
+                <p class="mt-2 text-[14px] text-red-200/80 leading-relaxed">
+                    新闻观察员的大脑似乎开小差了。这通常是因为本地模型未启动，或云端 API 达到了速率限制。<br><br>
+                    <strong>您可以尝试：</strong><br>
+                    1. 检查您的 Ollama/LM Studio 客户端是否正在运行。<br>
+                    2. 检查网络连接或 API 密钥余额。<br>
+                    3. 在左侧边栏点击“重新配置”切换到备用模型。
+                </p>
+            </div>
+            """
+            verdict_placeholder.markdown(fallback_html, unsafe_allow_html=True)
+            
+            # 确保将失败信息也记入历史，避免刷新后丢失上下文
+            error_message = "系统暂时无法连接到 AI 模型，核查已中断。"
+            st.session_state.messages.append({"role": "assistant", "content": error_message})
+            
+            # 记录具体的错误日志到控制台，方便开发者排查（不在前端暴露给用户）
+            print(f"Fact-check pipeline failed: {str(e)}")
 
 
 def show_history_page():
